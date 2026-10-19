@@ -1,0 +1,298 @@
+Autonomous AI Testing Agent for REST APIs: Research & Development Bible
+Version 1.0 (final draft) · 11 October 2026 · Mini Project, Phase 0 → Phase 1
+0. How to use this document
+This is the single reference for the project. It explains the project from zero, records every research finding that is useful, corrects earlier mistakes, and gives a build plan. Read sections 1 to 3 to understand the project, section 5 to know what we build, section 7 for how we prove it works, and section 8 for the plan.
+Honesty notes (read these first)
+Everything here comes from abstracts, project pages and summaries I read during two research rounds. Details (numbers, venues) must be checked against the original paper before they go on a slide or into an interview answer.
+Claims marked [unverified] are my own reasoning, not something a paper states.
+Correction to my earlier advice: I said most tools do not shrink failing inputs. That was too strong. Schemathesis inherits shrinking from the Hypothesis library, and RESTler groups bugs into buckets and gives a replay log. What I did not find is sequence-level minimization with multi-user context and security-violation checks. The gap is narrower than I first said.
+The project name stays: Autonomous AI Testing Agent for REST APIs. Everything else may change.
+1. The project in plain language
+REST API. The way an app talks to a server. Opening a food-delivery app and placing an order sends a request such as POST /orders to the server's API.
+OpenAPI (Swagger) specification. A file that lists every endpoint of an API, the inputs each one accepts, and the responses it should give. It is the "menu" the tester reads.
+What the agent does.
+Reads the OpenAPI spec and works out which endpoints depend on each other (create a user before creating an order).
+Generates normal tests and hostile tests (wrong types, boundary values, another user's IDs, missing tokens, injection strings).
+Runs them against a live API.
+Detects failures: crashes, wrong status codes, responses that break the spec, data leaks, access-control violations.
+Re-runs each finding to prove it is real.
+Shrinks it to the smallest request sequence that still fails.
+Writes a report: steps to reproduce, a runnable test, and a tested explanation of the cause.
+Key terms
+Oracle: the rule that decides whether a response is correct. "Status is not 500" is a weak oracle; "user B must not read user A's order" is a strong one.
+BOLA / IDOR: Broken Object Level Authorization. A user can read or change objects that belong to someone else by changing an ID. It is ranked first in the OWASP API Security Top 10 (2023).
+Mass assignment: the API lets a client overwrite fields that should be read-only or private.
+Delta debugging (ddmin): an algorithm that repeatedly removes parts of a failing input until nothing more can be removed without the failure disappearing.
+Stateful testing: testing sequences of requests where later ones depend on earlier ones.
+False positive: the tool reports a bug that is not a bug.
+2. Problem and real-world impact
+APIs connect almost all modern apps to their data. The most serious API flaws (broken object-level authorization, broken authentication, mass assignment, excessive data exposure) are logic and access-control bugs. They usually do not crash the server, so a tool that only watches for HTTP 500 will miss them.
+A developer who receives "something failed" still has to reproduce it, narrow it down and work out why. That is slow. The project's value is cutting that effort and catching security flaws that crash-only fuzzers miss.
+Problem statement (usable on the slide). To build an autonomous agent that generates stateful functional and adversarial tests from an OpenAPI specification, detects functional and access-control failures, proves each finding by replay, minimizes it to a smallest reproducible request sequence, and reports a root-cause hypothesis that has itself been tested.
+3. State of the art: what exists
+3.1 Test generation and exploration
+Work
+What it does
+Limits / notes
+RESTler (Atlidakis et al., ICSE 2019)
+First stateful REST fuzzer. Analyses the spec, builds request sequences, has security checkers, buckets bugs, provides a replay log.
+Replay, not minimization. Our Phase 0 deck already cites it.
+EvoMaster (Arcuri, TOSEM 2019)
+Search-based fuzzer, black-box and white-box, open source. Newer versions add access-policy and injection oracles.
+Access oracles need an access policy as input.
+Schemathesis
+Python tool using Hypothesis. Phases: examples, coverage, fuzzing, stateful (when the spec defines links). Positive and negative testing by default. Payload shrinking inherited from Hypothesis.
+Strong baseline. Stateful phase depends on links in the spec.
+AutoRestTest (Kim, Stennett, Sinha, Orso; ICSE 2025)
+Four agents (API, dependency, parameter, value) trained with multi-agent reinforcement learning, a semantic property dependency graph, LLM-generated values. Beat four leading tools on 12 real services; ablation shows each part helps.
+Optimizes coverage and 500 errors, not security or logic violations.
+LlamaRestTest (Kim et al., FSE 2025)
+Fine-tuned, quantized Llama3-8B models generate realistic values and discover parameter dependencies from responses. Small models matched or beat larger ones.
+Shows cheap local models are viable.
+KAT, MASTEST, RESTGPT, ARAT-RL, MINER
+Related LLM or learning-based generators.
+Only titles and abstracts seen; not studied in depth.
+3.2 Better oracles (the interesting part)
+Work
+What it does
+Notes
+LogiAgent (Zhang et al., 2025)
+LLM multi-agent system with a scenario generator, executor and response validator that checks business-logic oracles. Found 234 logical issues on 12 systems at 66.19% accuracy.
+About one in three reports was wrong: false positives are the open problem. A replication package is cited by other papers.
+AGORA / AGORA+ (Alonso et al., ISSTA 2023, TOSEM 2025)
+Infers output invariants with Daikon (106 invariant types). 80% precision on 25 operations from 20 industrial APIs; found 48% of seeded errors; 32 bugs in popular APIs.
+Beet implementation, Docker image and replication package are public.
+SATORI (Alonso et al., ASE 2025)
+Infers oracles statically from the OpenAPI spec. Together with AGORA+ it found 90% of oracles in a ground-truth set.
+Static and dynamic inference are complementary.
+EvoMaster access-policy oracles (2026)
+Seven oracles for authorization and access-control faults plus two for SQL injection and XSS. Tested on 52 APIs (9 artificial, 8 vulnerable-by-design, 36 from WFD).
+Directly reimplementable checks.
+Mass assignment testing (Corradini, Pasqua, Ceccato; ICSE 2023)
+Black-box detection of mass assignment from the spec alone. Extension of EvoMaster.
+AuthREST (2025)
+Open-source tester for broken authentication using three black-box oracles. Four previously unknown vulnerabilities in public APIs.
+A reviewer notes its lockout oracle may miss per-account lockouts.
+BACFuzz (2025)
+Grey-box fuzzing for broken access control with LLM-guided parameter analysis and a database-query oracle. 26 unknown vulnerabilities.
+Targets web apps; the "verify through the database" idea transfers.
+ARMeta (2026)
+LLM multi-agent metamorphic testing of REST APIs: finds relations the API should satisfy and writes Given-When-Then tests.
+Useful when the correct output is unknown.
+3.3 Minimizing and explaining failures
+Work
+Takeaway
+Delta debugging, ddmin (Zeller and Hildebrandt, 2002)
+A test is minimal when removing any single input piece makes the failure disappear.
+Picire (Python)
+Maintained delta-debugging implementation with caching and parallel runs. Usable directly.
+FailMin (PyPI)
+Applies delta debugging to AI-agent traces. Its key rule: reduction must preserve dependencies. We need the same rule for request sequences.
+RESTler bug buckets and replay
+Groups failures by sequence suffix and logs them for replay.
+MINER (USENIX Security 2023)
+Notes that error reproduction across request sequences is a real problem.
+"Minimizing Test cases in REST API Fuzzing" (IEEE, 2024)
+Reduces the number of tests, for example by watching for repeated 404s. A different problem from shrinking one failing sequence.
+LLM root-cause research
+In agent-log studies, LLMs tend to accept a plausible-looking cause before checking all evidence. A secondary source reports that adding code knowledge improved localization by 28.3% (treat as unconfirmed).
+3.4 Benchmarks
+WFD / WFC (Sahin et al., 2025): 36 open-source APIs with scaffolding, authentication handling and guidelines for fair comparison. It replaced EMB. Experiments compared EvoMaster with ARAT-RL, EmRest, LlamaRestTest, RESTler and Schemathesis, and discussed common pitfalls in tool comparisons.
+Vulnerable-by-design APIs: the EvoMaster oracle paper used eight. OWASP crAPI and VAmPI are commonly used; confirm availability before relying on them.
+3.5 Where our Phase 0 idea sits
+Reference 4 in the Phase 0 deck (Vilela et al., 2025) is a workshop paper (WBOTS 2025, Brazil). It splits an OpenAPI document by endpoint, prompts an LLM to write tests and runs them with Newman. That is essentially the Phase 0 plan, so "LLM writes API tests" alone will not impress anyone who knows the field.
+4. Gap analysis
+Oracle gap. Generators are strong, oracles are weak. Most tools detect crashes, regressions and spec violations. Access-control and logic violations need oracles that know who owns what.
+Policy gap. The access-control oracles above need an access policy defined by a person. Inferring the ownership rules from the spec and observed behaviour removes that setup cost. [unverified that no paper does this; check]
+Trust gap. LLM-judged bugs are wrong about a third of the time (LogiAgent). A finding that is not replayed and confirmed should not be reported.
+Reduction gap. Payload shrinking and replay logs exist. Sequence-level minimization that keeps dependencies, keeps the same user identities and preserves a specific security violation (not just "any 5xx") was not found in my searches. [unverified]
+Explanation gap. None of the tools reviewed produces a root-cause explanation that is checked against the live API.
+5. Proposed system
+5.1 Thesis
+An agent whose every finding is proven by replay, shrunk to a minimal sequence, and explained by a hypothesis the agent has tested.
+5.2 Pipeline
+Spec ingestion. Parse the OpenAPI file; list operations, schemas, security schemes and links.
+Dependency graph. Link operations that produce IDs to operations that consume them (idea from AutoRestTest's semantic dependency graph; LlamaRestTest learns dependencies from responses).
+Principal setup. Create two or three test users plus one admin where possible (WFD supplies authentication handling for its APIs).
+Ownership model inference. The LLM proposes who owns each resource type and which operations should be restricted (for example, "orders belong to their creator"). Observed behaviour then confirms or corrects it.
+Planner and generator. The LLM plans scenarios; generators produce positive tests, negative tests and security probes. Schemathesis can supply schema-valid and schema-invalid values.
+Executor. Sends requests with the right user's credentials and records full request/response traces.
+Oracle bank. Applies, in order of cost: spec and status oracles; static oracles (SATORI-style); learned invariants (AGORA+/Beet); security oracles (BOLA, function-level authorization, mass assignment, broken authentication, injection); an LLM judge only for logical issues, always followed by step 8.
+Verifier. Replays every candidate finding from a clean state at least twice. A finding that does not reproduce is discarded or labeled flaky.
+Minimizer. Delta debugging over the request sequence, then over fields inside each request, with a predicate that checks the same violation still occurs (section 6.3).
+Diagnoser. The LLM proposes a root-cause hypothesis; the agent runs targeted probes to test it (section 6.4).
+Reporter. Markdown and JSON report plus a runnable pytest reproduction.
+5.3 Oracle catalogue to implement
+Oracle
+Rule
+Source
+Server error
+Response is 5xx
+Common baseline
+Spec conformance
+Status and body match the declared schema
+Common baseline
+BOLA
+User B can read or change user A's object
+EvoMaster oracles, BOLA literature
+Function-level authorization
+A low-privilege user can call an admin operation
+EvoMaster oracles
+Missing authentication
+Operation works without credentials
+EvoMaster oracles, AuthREST
+Mass assignment
+A read-only or private field was changed through the API
+Corradini et al.
+Data exposure
+Response contains fields or records the caller should not see
+BOLA/data-exposure literature
+Injection signals
+SQL or script payloads cause errors or reflected output
+EvoMaster oracles
+Invariants
+Output properties that always held in other responses now break
+AGORA+/Beet
+Static oracles
+Properties implied by the spec
+SATORI
+Metamorphic
+Related requests give related responses
+ARMeta
+Logical (LLM)
+Business-rule violations
+LogiAgent, verified by replay before reporting
+6. Core algorithms
+6.1 Ownership model inference
+Input: the spec, example responses, and traces from users A and B. The LLM proposes rules as structured data (resource, owner field, who may read, who may write). The agent tests each rule with a probe and keeps only rules the live API behaviour does not contradict. Output: a policy usable by the BOLA and function-level oracles.
+6.2 Multi-user differential testing
+User A creates a resource; user B and an unauthenticated client try to read, update and delete it; an admin does the same. Expected outcomes come from the ownership model. A mismatch is a candidate finding and goes to the verifier.
+6.3 Sequence-level delta debugging
+Units: requests in the failing sequence, then fields inside each request body, query and headers.
+Predicate ("still fails"): the same violation class occurs at the same operation with the same principal pair, not merely any error.
+Dependency rule: never remove a request whose output a kept request still needs; where a removal breaks a dependency, try replacing the removed value with a fixed one. (Principle taken from FailMin.)
+State reset: every candidate runs from a clean state (fresh users and data, or a database snapshot). This is the main engineering cost.
+Caching and parallelism: cache outcomes by candidate hash; Picire shows how.
+Metric: reduction ratio = 1 − (minimal size ÷ original size).
+6.4 Hypothesis-tested diagnosis
+The LLM receives the minimal reproduction, the response bodies and, if available, server logs or source code. It outputs a cause as a testable claim ("the handler does not compare the caller's ID with the order's owner") and a list of probes that would confirm or refute it. The agent runs the probes. Only a supported hypothesis appears as "likely cause"; otherwise the report lists the facts and says the cause is unconfirmed. This directly targets the tendency of LLMs to commit to a plausible but unchecked cause. This design is my proposal, not a published method.
+6.5 Cost control
+Use deterministic code wherever possible. Use a small or fine-tuned model for values and dependency guesses (LlamaRestTest shows this works), and a stronger model only for planning and diagnosis. Cache LLM calls by prompt hash. Report cost per confirmed bug.
+7. Evaluation plan (the interview ammunition)
+Targets
+Vulnerable-by-design APIs with known bugs (ground truth).
+A subset of WFD APIs that need authentication.
+Optionally one public API with permission to test.
+Baselines
+Schemathesis (stateful and negative modes on).
+EvoMaster (black-box, access-policy oracles where available).
+RESTler.
+Our own agent with the LLM disabled (ablation).
+Metrics
+Confirmed real bugs, by class (BOLA, auth, mass assignment, injection, 5xx, logical).
+False-positive rate before and after the verifier. Target: well below LogiAgent's roughly one-in-three wrong reports.
+Reduction ratio and time to minimize.
+Fraction of root-cause hypotheses that match the known cause.
+Cost and time per confirmed bug.
+Number of requests needed to reproduce, original vs minimal.
+Ablations
+Without ownership inference (manual policy instead).
+Without verifier.
+Without minimizer.
+Without hypothesis testing.
+Small model vs large model.
+Fair-comparison rules (the WFD paper discusses common pitfalls): same time budget, same authentication setup, repeat runs because results vary, and report variance.
+Threats to validity: vulnerable-by-design apps may not look like production; LLM nondeterminism; stateful reset can hide state-dependent bugs; ground-truth bug lists may be incomplete.
+8. Build plan
+8.1 Phase 1 vertical slice (the next few days)
+Goal: a demo that works end to end on one API, rather than many half-finished parts.
+Day
+Deliverable
+1
+Pick the target API and run it in Docker. Run Schemathesis once to see the baseline. Parse the OpenAPI file.
+2
+Dependency graph and two test users. Executor with full trace logging.
+3
+Spec and 5xx oracles plus the BOLA oracle with two users. Seed or find one real BOLA bug.
+4
+Verifier (replay twice from clean state).
+5
+Minimizer: ddmin over requests, then fields. Show original vs minimal.
+6
+LLM diagnosis with probes; report and pytest export.
+7
+Rehearse the demo; collect baseline comparison on this one target.
+8.2 Later phases
+Phase 2: mass assignment, function-level authorization, injection oracles; AGORA+/Beet invariants; ownership inference.
+Phase 3: WFD evaluation, baselines, ablations, cost study.
+Phase 4: optional MCP/agent-tool testing (section 10), CI integration, write-up.
+8.3 Suggested stack
+Python 3.11 · httpx · pydantic · an OpenAPI parser library · networkx for the dependency graph · Schemathesis as generator and baseline · Picire or a small custom ddmin · pytest for exported reproductions · SQLite for findings · Docker Compose for targets and database resets · an LLM API plus a local small model for cheap calls · an agent framework only if it helps (a plain loop is acceptable).
+9. Risks and mitigations
+Risk
+Mitigation
+LLM invents bugs
+Verifier replays; no replay, no report.
+Flaky or stateful failures
+Clean state per replay; run twice; label flaky.
+Minimizer too slow
+Cache, parallelize, cap steps; minimize requests first, fields second.
+Scope too big for the time
+Vertical slice first; each later oracle is an add-on.
+Destructive requests on real data
+Test only isolated Docker targets; never run against production without permission.
+Novelty claim challenged
+Say "I found no prior work on X" and show the search; avoid "nobody has done this".
+Reproduction of papers is hard
+Use public tools (Beet, Schemathesis, RESTler, EvoMaster, WFD) as components rather than reimplementing.
+10. Alternative or extension: APIs used by AI agents
+AI agents now call APIs through tool layers such as MCP servers. Related papers found: an IBM Research framework for testing REST APIs wrapped as LLM tools (it states that testing tools inside agent frameworks is relatively unexplored), an empirical study of wrapping REST APIs as MCP servers, and security work on MCP servers. Possible project angle: test whether an API stays safe and correct when an LLM agent supplies the arguments. Treat this as a Phase 4 extension, not the main plan.
+11. Interview talking points
+"Existing tools find crashes. The hard part is trusting, shrinking and explaining findings, so every finding in my agent is replayed, minimized and has a tested explanation."
+"LogiAgent reports about two thirds accuracy on logical bugs; my verifier exists to push false positives down, and I measure it."
+"I compared against Schemathesis and EvoMaster on the same APIs with the same budget."
+"The LLM is used where judgment is needed; everything else is deterministic, so cost per bug stays low."
+Be ready to explain ddmin in one minute and why the dependency rule matters.
+12. Reading list, in priority order
+Kim et al., AutoRestTest (ICSE 2025), the base agent design.
+EvoMaster access-policy oracles paper (2026), the oracle list.
+Zhang et al., LogiAgent (2025), logical oracles and the false-positive problem.
+Zeller and Hildebrandt, Simplifying and Isolating Failure-Inducing Input (TSE 2002), delta debugging.
+Alonso et al., AGORA+ (TOSEM 2025) and SATORI (ASE 2025), oracle inference.
+Sahin et al., WFC/WFD (2025), benchmark and comparison pitfalls.
+Corradini et al., mass assignment (ICSE 2023).
+Atlidakis et al., RESTler (ICSE 2019) and its security-checker paper (ICST 2020).
+Kim et al., LlamaRestTest (FSE 2025), cheap local models.
+AuthREST (2025) and BACFuzz (2025), authentication and access-control testing.
+13. Open questions and next research round
+Does any paper already infer ownership or access policy automatically for REST APIs? (Search again with different words before claiming novelty.)
+Is there sequence-level minimization for REST APIs I missed? Check the RESTler, EvoMaster and Schemathesis issue trackers and recent software-engineering conference papers.
+Which target APIs are easiest to run with two authenticated users? Check WFD documentation.
+Is the AutoRestTest and LogiAgent code public and runnable? If yes, use as baselines.
+How well do LLM-inferred ownership rules hold up on APIs with unusual designs?
+Cost study: which parts can run on a small local model?
+14. References
+V. Atlidakis, P. Godefroid, M. Polishchuk, "RESTler: Stateful REST API Fuzzing," ICSE 2019.
+V. Atlidakis et al., "Checking Security Properties of Cloud Service REST APIs," ICST 2020.
+A. Arcuri, "RESTful API Automated Test Case Generation with EvoMaster," ACM TOSEM, 2019.
+M. Kim, Q. Xin, S. Sinha, A. Orso, "Automated Test Generation for REST APIs: No Time to Rest Yet," ISSTA 2022.
+M. Kim, T. Stennett, S. Sinha, A. Orso, "A Multi-Agent Approach for REST API Testing with Semantic Graphs and LLM-Driven Inputs," ICSE 2025 (arXiv:2411.07098).
+M. Kim et al., "LlamaRestTest: Effective REST API Testing with Small Language Models," FSE 2025 (arXiv:2501.08598).
+K. Zhang et al., "LogiAgent: Automated Logical Testing for REST Systems with LLM-Based Multi-Agents," 2025 (arXiv:2503.15079).
+J. C. Alonso, S. Segura, A. Ruiz-Cortés, "AGORA: Automated Generation of Test Oracles for REST APIs," ISSTA 2023.
+J. C. Alonso, M. D. Ernst, S. Segura, A. Ruiz-Cortés, "Test Oracle Generation for REST APIs," ACM TOSEM, 2025.
+J. C. Alonso et al., "SATORI: Static Test Oracle Generation for REST APIs," ASE 2025 (arXiv:2508.16318).
+"Enhancing REST API Fuzzing with Access Policy Violation Checks and Injection Attacks," 2026 (arXiv:2604.00702).
+D. Corradini, M. Pasqua, M. Ceccato, "Automated Black-box Testing of Mass Assignment Vulnerabilities in RESTful APIs," ICSE 2023 (arXiv:2301.01261).
+"Automated Testing of Broken Authentication Vulnerabilities in Web APIs with AuthREST," 2025 (arXiv:2509.10320).
+"BACFuzz: Exposing the Silence on Broken Access Control Vulnerabilities in Web Applications," 2025 (arXiv:2507.15984).
+S. Khan et al., "Multi-Agent LLM-based Metamorphic Testing for REST APIs (ARMeta)," 2026 (arXiv:2605.28321).
+A. Zeller, R. Hildebrandt, "Simplifying and Isolating Failure-Inducing Input," IEEE TSE 28(2), 2002.
+O. Sahin et al., "WFC/WFD: Web Fuzzing Commons, Dataset and Guidelines to Support Experimentation in REST API Fuzzing," 2025 (arXiv:2509.01612).
+R. Vilela et al., "An Intelligent Agent for Automated Test Generation from OpenAPI Specifications," WBOTS 2025, pp. 67-76.
+J. Bandlamudi et al., "A Framework for Testing and Adapting REST APIs as LLM Tools," IBM Research, 2025 (arXiv:2504.15546).
+Nooyens et al., "Test Amplification for REST APIs via Single and Multi-agent LLM Systems," ICTSS 2025.
+Schemathesis documentation, schemathesis.readthedocs.io.
+Picire (parallel delta debugging, Python), github.com/renatahodovan/picire.
+OWASP API Security Top 10 (2023).
+Note: the Phase 0 deck cited Corradini and Pasqua for "DeepREST" (2024). I could not confirm that title, its venue or full author list. Verify it before reusing reference 5.
